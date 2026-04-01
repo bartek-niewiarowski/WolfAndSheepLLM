@@ -10,42 +10,26 @@ import requests
 from google import genai
 from google.api_core import exceptions as google_exceptions
 
+import os
+from openai import OpenAI
+from openai import OpenAI, RateLimitError, APITimeoutError, APIError, APIConnectionError
+
 from game import Move, Player, WolfAndSheepGame
 
 
-SYSTEM_PROMPT = """Jesteś silnym graczem w grze Wilk i Owce.
+SYSTEM_PROMPT = """You are playing Wolf and Sheep on a chessboard.
+Rules:
+Move diagonally on dark squares.
+Sheep (S): move forward only (row increases). Goal: block the wolf.
+Wolf (W): move diagonally any direction. Goal: reach row 0.
 
-Zasady gry:
-- Plansza ma współrzędne (wiersz, kolumna)
-- Ruchy są po przekątnych (ukośnie)
-- OWCE (S):
-  - poruszają się tylko do przodu (większy numer wiersza)
-- WILK (W):
-  - może poruszać się w każdym kierunku ukośnie (do przodu i do tyłu)
+Input:
+Current player (W or S)
+List of moves: index: (r1,c1)->(r2,c2)
 
-Cel gry:
-- Wilk wygrywa jeśli dotrze do wiersza 0
-- Owce wygrywają jeśli zablokują wilka (brak ruchów)
-
-Twoje zadanie:
-1. Przeanalizuj planszę
-2. Rozważ wszystkie legalne ruchy
-3. Wybierz najlepszy ruch
-
-Zasady odpowiedzi:
-- Odpowiedz WYŁĄCZNIE poprawnym JSON-em
-- Format odpowiedzi:
-{"move_index": LICZBA}
-
-Wymagania:
-- LICZBA musi być jednym z podanych indeksów
-- nie dodawaj żadnego innego tekstu
-- nie używaj markdown
-- nie zwracaj wyjaśnień
-
-WAŻNE:
-- Wilk może poruszać się zarówno do przodu jak i do tyłu
-- upewnij się, że rozważasz wszystkie kierunki ruchu
+Output:
+Return ONLY the move index (e.g. 0)
+No explanation
 """
 
 
@@ -77,6 +61,20 @@ def parse_move_index(response_text: str, num_moves: int) -> Optional[int]:
 
     return None
 
+def extract_text_from_response(response) -> str:
+    text = (getattr(response, "output_text", None) or "").strip()
+    if text:
+        return text
+
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) == "message":
+            for content in getattr(item, "content", []) or []:
+                if getattr(content, "type", None) == "output_text":
+                    t = getattr(content, "text", None)
+                    if t:
+                        return t.strip()
+    return ""
+
 
 class LLMAgent:
     def __init__(
@@ -90,6 +88,7 @@ class LLMAgent:
         location: str = "global",
         ollama_base_url: str = "http://localhost:11434",
         request_timeout: int = 120,
+        openai_api_key: Optional[str] = None,
     ):
         self.player = player
         self.backend = backend.lower()
@@ -98,6 +97,7 @@ class LLMAgent:
         self.verbose = verbose
         self.request_timeout = request_timeout
         self.ollama_base_url = ollama_base_url.rstrip("/")
+        self.openai_client: Optional[OpenAI] = None
 
         self.client: Optional[genai.Client] = None
         if self.backend == "vertex":
@@ -110,6 +110,11 @@ class LLMAgent:
             )
         elif self.backend == "ollama":
             pass
+        elif self.backend == "openai":
+            self.openai_client = OpenAI(
+                api_key=openai_api_key or os.environ.get("OPEN_API_KEY"),
+                timeout=request_timeout,
+            )
         else:
             raise ValueError("backend musi mieć wartość 'vertex' albo 'ollama'.")
 
@@ -150,6 +155,8 @@ class LLMAgent:
             return self._call_vertex(prompt)
         if self.backend == "ollama":
             return self._call_ollama(prompt)
+        if self.backend == "openai":
+            return self._call_openai(prompt)
         raise RuntimeError(f"Nieobsługiwany backend: {self.backend}")
 
     def _call_vertex(self, prompt: str) -> str:
@@ -231,3 +238,42 @@ class LLMAgent:
                 time.sleep(sleep_for)
 
         raise RuntimeError(f"Ollama LLM failed after retries: {last_exc}")
+    
+    def _call_openai(self, prompt: str) -> str:
+        if self.openai_client is None:
+            raise RuntimeError("OpenAI client nie został zainicjalizowany.")
+
+        response = self.openai_client.responses.create(
+            model=self.model,
+            instructions=SYSTEM_PROMPT,
+            input=[{"role": "user", "content": prompt}],
+            reasoning={"effort": "minimal"},
+            max_output_tokens=32,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "strict": True,
+                    "name": "move_choice",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "move_index": {
+                                "type": "integer"
+                            }
+                        },
+                        "required": ["move_index"],
+                        "additionalProperties": False
+                    }
+                }
+            }
+        )
+
+        if response.status == "incomplete":
+            reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
+            raise RuntimeError(f"Odpowiedź incomplete: {reason}")
+
+        raw = extract_text_from_response(response)
+        if not raw:
+            raise RuntimeError(f"Brak tekstu. status={response.status}, output={response.output}")
+
+        return raw

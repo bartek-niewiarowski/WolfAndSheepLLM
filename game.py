@@ -312,7 +312,7 @@ class WolfAndSheepGame:
         moves = self.get_all_valid_moves(player)
 
         if not moves:
-            return "Brak legalnych ruchów"
+            return "No legal moves"
 
         return "\n".join(
             f"{idx}: {self.move_to_string(move)}"
@@ -324,16 +324,16 @@ class WolfAndSheepGame:
         winner = self.get_winner()
 
         parts = [
-            f"Rozmiar planszy: {self.board_size}x{self.board_size}",
-            f"Aktualny gracz: {player.value}",
-            "Plansza:",
+            f"Board size: {self.board_size}x{self.board_size}",
+            f"Current player: {player.value}",
+            "Board:",
             self.board_as_string(show_coordinates=True),
-            "Legalne ruchy:",
+            "Legal moves:",
             self.legal_moves_as_string(player),
         ]
 
         if winner is not None:
-            parts.append(f"Zwycięzca: {winner.value}")
+            parts.append(f"Winner: {winner.value}")
 
         return "\n".join(parts)
 

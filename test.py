@@ -25,7 +25,7 @@ def play_game(
         if game.current_player == Player.WOLF:
             move = wolf_agent.choose_move(game)
             ai_move_count += 1
-            print(f"AI moves: {ai_move_count}")
+            #print(f"AI moves: {ai_move_count}")
         else:
             move = sheep_agent.choose_move(game)
 
@@ -42,13 +42,13 @@ def play_game(
 
 
 if __name__ == "__main__":
-    sheep = MinimaxAgent(player=Player.SHEEP, max_depth=5)
-    wolf = LLMAgent(player=Player.WOLF, 
-    backend="ollama",
-    model="llama3.2:3b",
+    wolf = MinimaxAgent(player=Player.WOLF, max_depth=2)
+    sheep = LLMAgent(player=Player.SHEEP, 
+    backend="openai",
+    model="gpt-5-nano",
     temperature=0.0,
     verbose=True,
-    ollama_base_url="http://localhost:11434",)
+    )
 
     winner, game = play_game(wolf_agent=wolf, sheep_agent=sheep)
 
