@@ -5,13 +5,13 @@ import re
 import time
 from typing import Optional
 import json
+from dataclasses import asdict, dataclass
 
 import requests
 from google import genai
 from google.api_core import exceptions as google_exceptions
 
 import os
-from openai import OpenAI
 from openai import OpenAI, RateLimitError, APITimeoutError, APIError, APIConnectionError
 
 from game import Move, Player, WolfAndSheepGame
@@ -32,17 +32,26 @@ Return ONLY the move index (e.g. 0)
 No explanation
 """
 
+@dataclass
+class PromptPayload:
+    system_prompt: str
+    user_prompt: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def pretty(self) -> str:
+        return (
+            f"[SYSTEM]\n{self.system_prompt}\n\n"
+            f"[USER]\n{self.user_prompt}"
+        )
 
 def parse_move_index(response_text: str, num_moves: int) -> Optional[int]:
     text = response_text.strip()
-
-    # 1. Idealny przypadek: sama liczba
     if text.isdigit():
         idx = int(text)
         if 0 <= idx < num_moves:
             return idx
-
-    # 2. JSON typu {"move_index": 2}
     try:
         data = json.loads(text)
         if isinstance(data, dict) and "move_index" in data:
@@ -52,7 +61,6 @@ def parse_move_index(response_text: str, num_moves: int) -> Optional[int]:
     except Exception:
         pass
 
-    # 3. Szukaj wszystkich liczb i wybierz pierwszą, która mieści się w zakresie ruchów
     matches = re.findall(r"\d+", text)
     for m in matches:
         idx = int(m)
@@ -98,6 +106,8 @@ class LLMAgent:
         self.request_timeout = request_timeout
         self.ollama_base_url = ollama_base_url.rstrip("/")
         self.openai_client: Optional[OpenAI] = None
+        self.last_prompt: Optional[PromptPayload] = None
+        self.prompt_history: list[PromptPayload] = []
 
         self.client: Optional[genai.Client] = None
         if self.backend == "vertex":
@@ -112,11 +122,11 @@ class LLMAgent:
             pass
         elif self.backend == "openai":
             self.openai_client = OpenAI(
-                api_key=openai_api_key or os.environ.get("OPEN_API_KEY"),
+                api_key = os.environ.get("OPENAI_API_KEY"),
                 timeout=request_timeout,
             )
         else:
-            raise ValueError("backend musi mieć wartość 'vertex' albo 'ollama'.")
+            raise ValueError("backend musi mieć wartość 'vertex', 'openai' albo 'ollama'.")
 
     def choose_move(self, game: WolfAndSheepGame) -> Optional[Move]:
         legal_moves = game.get_all_valid_moves(self.player)
@@ -124,11 +134,13 @@ class LLMAgent:
             return None
 
         prompt = self._build_prompt(game)
+        self.last_prompt = prompt
+        self.prompt_history.append(prompt)
 
         if self.verbose:
             print(f"\n[LLMAgent/{self.player.value}] Backend: {self.backend}")
             print(f"[LLMAgent/{self.player.value}] Model: {self.model}")
-            print(f"[LLMAgent/{self.player.value}] Prompt:\n{prompt}\n")
+            print(f"[LLMAgent/{self.player.value}] Prompt:\n{prompt.pretty()}\n")
 
         response_text = self._call_llm(prompt)
 
@@ -147,8 +159,11 @@ class LLMAgent:
 
         return legal_moves[idx]
 
-    def _build_prompt(self, game: WolfAndSheepGame) -> str:
-        return game.to_prompt_format(self.player)
+    def _build_prompt(self, game: WolfAndSheepGame) -> PromptPayload:
+        return PromptPayload(
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=game.to_prompt_format(self.player),
+        )
 
     def _call_llm(self, prompt: str) -> str:
         if self.backend == "vertex":
@@ -200,8 +215,8 @@ class LLMAgent:
             "model": self.model,
             "stream": False,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": prompt.system_prompt},
+                {"role": "user", "content": prompt.user_prompt},
             ],
             "options": {
                 "temperature": self.temperature,
@@ -245,10 +260,10 @@ class LLMAgent:
 
         response = self.openai_client.responses.create(
             model=self.model,
-            instructions=SYSTEM_PROMPT,
-            input=[{"role": "user", "content": prompt}],
-            reasoning={"effort": "minimal"},
-            max_output_tokens=32,
+            instructions=prompt.system_prompt,
+            input=[{"role": "user", "content": prompt.user_prompt}],
+            reasoning={"effort": "low"},
+            max_output_tokens=2048,
             text={
                 "format": {
                     "type": "json_schema",
