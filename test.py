@@ -234,7 +234,7 @@ if __name__ == "__main__":
     )
 
     summary = run_series(
-        num_games=10,
+        num_games=25,
         wolf_agent=wolf,
         sheep_agent=sheep,
         output_file="game_results.jsonl",

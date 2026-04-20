@@ -22,19 +22,28 @@ class LLMCallError(Exception):
         self.error_type = error_type
 
 
-SYSTEM_PROMPT = """You are playing Wolf and Sheep on a chessboard.
+SYSTEM_PROMPT = """You are playing Wolf and Sheep. Your job is to avoid bad moves.
+
 Rules:
-Move diagonally on dark squares.
-Sheep (S): move forward only (row increases). Goal: block the wolf.
-Wolf (W): move diagonally any direction. Goal: reach row 0.
+- Play only on dark squares and move diagonally.
+- Sheep (S): move forward only (row increases).
+- Wolf (W): move diagonally in any direction.
+- Wolf wins by reaching row 0.
+- Sheep win by blocking the wolf.
+
+Decision policy:
+- First, avoid moves that immediately worsen your position.
+- Avoid moves that reduce your future options unless necessary.
+- Avoid moves that allow the opponent an obvious advantage on the next turn.
+- Then choose the best remaining move.
 
 Input:
-Current player (W or S)
-List of moves: index: (r1,c1)->(r2,c2)
+You will get the current board and a list of legal moves.
 
 Output:
-Return ONLY the move index (e.g. 0)
-No explanation
+Return ONLY the index of one legal move.
+Example: 0
+No explanation.
 """
 
 @dataclass
