@@ -5,7 +5,7 @@ from pathlib import Path
 
 from game import WolfAndSheepGame, Player
 from minimaxAgent import MinimaxAgent
-from llmAgent import LLMAgent
+from llmAgent import LLMAgent, LLMCallError
 
 def get_example_prompt_from_agent(agent: LLMAgent) -> Optional[dict[str, Any]]:
     """
@@ -103,45 +103,85 @@ def run_series(
     llm_wins = 0
     ai_wins = 0
     draws_or_unfinished = 0
+    skipped_games = 0
     game_lengths: list[int] = []
     per_game_results: list[dict[str, Any]] = []
+    try:
+        for game_idx in range(1, num_games + 1):
+            winner, game, moves_played = play_game(
+                wolf_agent=wolf_agent,
+                sheep_agent=sheep_agent,
+                board_size=board_size,
+                max_turns=max_turns,
+                verbose=verbose_each_game,
+            )
 
-    for game_idx in range(1, num_games + 1):
-        winner, game, moves_played = play_game(
-            wolf_agent=wolf_agent,
-            sheep_agent=sheep_agent,
-            board_size=board_size,
-            max_turns=max_turns,
-            verbose=verbose_each_game,
-        )
+            game_lengths.append(moves_played)
 
-        game_lengths.append(moves_played)
+            if winner is None:
+                winner_label = None
+                draws_or_unfinished += 1
+            else:
+                winner_label = winner.value
 
-        if winner is None:
-            winner_label = None
-            draws_or_unfinished += 1
-        else:
-            winner_label = winner.value
+                llm_player = llm_agent.player
+                minimax_player = minimax_agent.player
 
-            llm_player = llm_agent.player
-            minimax_player = minimax_agent.player
+                if winner == llm_player:
+                    llm_wins += 1
+                elif winner == minimax_player:
+                    ai_wins += 1
+            per_game_results.append(
+            {
+                "game_index": game_idx,
+                "status": "completed",
+                "winner": winner_label,
+                "moves_played": moves_played,
+                "error_type": None,
+                "error_message": None,
+            }
+            )
 
-            if winner == llm_player:
-                llm_wins += 1
-            elif winner == minimax_player:
-                ai_wins += 1
+            print(
+                f"[{game_idx}/{num_games}] status=completed, "
+                f"winner={winner_label}, moves={moves_played}"
+            )
+    except LLMCallError as e:
+        skipped_games += 1
 
         per_game_results.append(
             {
                 "game_index": game_idx,
-                "winner": winner_label,
-                "moves_played": moves_played,
+                "status": "skipped",
+                "winner": None,
+                "moves_played": None,
+                "error_type": getattr(e, "error_type", "llm_error"),
+                "error_message": str(e),
             }
         )
 
         print(
-            f"[{game_idx}/{num_games}] winner={winner_label}, "
-            f"moves={moves_played}"
+            f"[{game_idx}/{num_games}] status=skipped, "
+            f"reason={getattr(e, 'error_type', 'llm_error')} | {e}"
+        )
+
+    except Exception as e:
+        skipped_games += 1
+
+        per_game_results.append(
+            {
+                "game_index": game_idx,
+                "status": "skipped",
+                "winner": None,
+                "moves_played": None,
+                "error_type": "unexpected_error",
+                "error_message": str(e),
+            }
+        )
+
+        print(
+            f"[{game_idx}/{num_games}] status=skipped, "
+            f"reason=unexpected_error | {e}"
         )
 
     example_prompt = get_example_prompt_from_agent(llm_agent)
@@ -180,8 +220,10 @@ if __name__ == "__main__":
     # Przykład: LLM gra wilkiem, Minimax gra owcami
     wolf = LLMAgent(
         player=Player.WOLF,
-        backend="ollama",
-        model="llama3.2:3b",
+        #backend="ollama",
+        backend="openai",
+        #model="llama3.2:3b",
+        model="gpt-5.4-nano",
         temperature=0.0,
         verbose=False,
     )
@@ -192,7 +234,7 @@ if __name__ == "__main__":
     )
 
     summary = run_series(
-        num_games=2,
+        num_games=10,
         wolf_agent=wolf,
         sheep_agent=sheep,
         output_file="game_results.jsonl",

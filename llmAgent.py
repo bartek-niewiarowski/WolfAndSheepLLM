@@ -16,6 +16,11 @@ from openai import OpenAI, RateLimitError, APITimeoutError, APIError, APIConnect
 
 from game import Move, Player, WolfAndSheepGame
 
+class LLMCallError(Exception):
+    def __init__(self, message: str, error_type: str = "llm_error"):
+        super().__init__(message)
+        self.error_type = error_type
+
 
 SYSTEM_PROMPT = """You are playing Wolf and Sheep on a chessboard.
 Rules:
@@ -142,7 +147,13 @@ class LLMAgent:
             print(f"[LLMAgent/{self.player.value}] Model: {self.model}")
             print(f"[LLMAgent/{self.player.value}] Prompt:\n{prompt.pretty()}\n")
 
-        response_text = self._call_llm(prompt)
+        try:
+            response_text = self._call_llm(prompt)
+        except Exception as e:
+            raise LLMCallError(
+                f"[LLMAgent/{self.player.value}] Błąd wywołania LLM: {e}",
+                error_type="llm_call_failed"
+            ) from e
 
         if self.verbose:
             print(f"[LLMAgent/{self.player.value}] Odpowiedź LLM: {response_text!r}")
@@ -150,11 +161,10 @@ class LLMAgent:
         idx = parse_move_index(response_text, len(legal_moves))
 
         if idx is None:
-            raise ValueError(
-                f"[LLMAgent/{self.player.value}] Nie udało się sparsować odpowiedzi LLM.\n"
-                f"Odpowiedź: {response_text!r}\n"
-                f"Liczba legalnych ruchów: {len(legal_moves)}\n"
-                f"Dozwolone indeksy: 0..{len(legal_moves)-1}"
+            raise LLMCallError(
+            f"[LLMAgent/{self.player.value}] Nie udało się sparsować odpowiedzi LLM. "
+            f"Odpowiedź: {response_text!r}, liczba legalnych ruchów: {len(legal_moves)}",
+            error_type="invalid_llm_output"
             )
 
         return legal_moves[idx]
@@ -165,7 +175,7 @@ class LLMAgent:
             user_prompt=game.to_prompt_format(self.player),
         )
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: PromptPayload) -> str:
         if self.backend == "vertex":
             return self._call_vertex(prompt)
         if self.backend == "ollama":
@@ -174,7 +184,7 @@ class LLMAgent:
             return self._call_openai(prompt)
         raise RuntimeError(f"Nieobsługiwany backend: {self.backend}")
 
-    def _call_vertex(self, prompt: str) -> str:
+    def _call_vertex(self, prompt: PromptPayload) -> str:
         if self.client is None:
             raise RuntimeError("Vertex client nie został zainicjalizowany.")
 
@@ -208,7 +218,7 @@ class LLMAgent:
 
         raise RuntimeError(f"Vertex LLM failed after retries: {last_exc}")
 
-    def _call_ollama(self, prompt: str) -> str:
+    def _call_ollama(self, prompt: PromptPayload) -> str:
         url = f"{self.ollama_base_url}/api/chat"
 
         payload = {
@@ -254,34 +264,45 @@ class LLMAgent:
 
         raise RuntimeError(f"Ollama LLM failed after retries: {last_exc}")
     
-    def _call_openai(self, prompt: str) -> str:
+    def _call_openai(self, prompt: PromptPayload) -> str:
         if self.openai_client is None:
             raise RuntimeError("OpenAI client nie został zainicjalizowany.")
 
-        response = self.openai_client.responses.create(
-            model=self.model,
-            instructions=prompt.system_prompt,
-            input=[{"role": "user", "content": prompt.user_prompt}],
-            reasoning={"effort": "low"},
-            max_output_tokens=2048,
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "strict": True,
-                    "name": "move_choice",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "move_index": {
-                                "type": "integer"
-                            }
-                        },
-                        "required": ["move_index"],
-                        "additionalProperties": False
+        try:
+            response = self.openai_client.responses.create(
+                model=self.model,
+                instructions=prompt.system_prompt,
+                input=[{"role": "user", "content": prompt.user_prompt}],
+                reasoning={"effort": "low"},
+                max_output_tokens=2048,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "strict": True,
+                        "name": "move_choice",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "move_index": {
+                                    "type": "integer"
+                                }
+                            },
+                            "required": ["move_index"],
+                            "additionalProperties": False
+                        }
                     }
                 }
-            }
-        )
+            )
+        except RateLimitError as e:
+            raise RuntimeError(f"OpenAI RateLimitError: {e}") from e
+        except APITimeoutError as e:
+            raise RuntimeError(f"OpenAI APITimeoutError: {e}") from e
+        except APIConnectionError as e:
+            raise RuntimeError(f"OpenAI APIConnectionError: {e}") from e
+        except APIError as e:
+            raise RuntimeError(f"OpenAI APIError: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Nieznany błąd OpenAI: {e}") from e
 
         if response.status == "incomplete":
             reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
